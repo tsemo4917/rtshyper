@@ -87,11 +87,6 @@ pub(super) fn vmm_init_image(vm: &Vm) -> bool {
     let vm_id = vm.id();
     let config = vm.config();
 
-    if config.kernel_load_ipa() == 0 {
-        error!("vmm_init_image: kernel load ipa is null");
-        return false;
-    }
-
     // Only load MVM kernel image "L4T" from binding.
     // Load GVM kernel image from shyper-cli, you may check it for more information.
     match vm.config().kernel_img_name() {

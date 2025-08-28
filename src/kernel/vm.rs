@@ -487,7 +487,7 @@ impl Vm {
     pub fn ipa2hva(&self, ipa: usize) -> usize {
         let mask = (1 << (HYP_VA_SIZE - VM_IPA_SIZE)) - 1;
         let prefix = mask << VM_IPA_SIZE;
-        if ipa == 0 || ipa & prefix != 0 {
+        if ipa & prefix != 0 {
             error!("ipa2hva: VM {} access invalid ipa {:x}", self.id(), ipa);
             return 0;
         }
