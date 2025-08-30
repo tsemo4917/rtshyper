@@ -1,11 +1,11 @@
 use std::env::var;
 use std::fs;
 use std::io::{Result, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 struct ConfigPlatform {
     platform: &'static str,
-    vm0_image_path: &'static str,
+    vm0_image_path: PathBuf,
     max_core_num: usize,
 }
 
@@ -23,23 +23,23 @@ impl ConfigPlatform {
     }
 }
 
-const fn get_config() -> ConfigPlatform {
+fn get_config() -> ConfigPlatform {
     if cfg!(feature = "tx2") {
         ConfigPlatform {
             platform: "tx2",
-            vm0_image_path: "image/L4T",
+            vm0_image_path: PathBuf::from("image/L4T"),
             max_core_num: 4,
         }
     } else if cfg!(feature = "pi4") {
         ConfigPlatform {
             platform: "pi4",
-            vm0_image_path: "image/Image_pi4_5.4.83_tlb",
+            vm0_image_path: PathBuf::from("image/Image_pi4_5.4.83_tlb"),
             max_core_num: 4,
         }
     } else if cfg!(feature = "qemu") {
         ConfigPlatform {
             platform: "qemu",
-            vm0_image_path: "image/Image_vanilla",
+            vm0_image_path: PathBuf::from("image/Image_vanilla"),
             max_core_num: 8,
         }
     } else {
@@ -66,11 +66,12 @@ fn main() -> Result<()> {
     let hostname = gethostname::gethostname();
     println!("cargo:rustc-env=HOSTNAME={}", hostname.into_string().unwrap());
     built::write_built_file().expect("Failed to acquire build-time information");
-    println!(
-        "cargo:rustc-env=VM0_IMAGE_PATH={}/{}",
-        env!("CARGO_MANIFEST_DIR"),
+    let vm0_image_path = if config.vm0_image_path.is_relative() {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&config.vm0_image_path)
+    } else {
         config.vm0_image_path
-    );
+    };
+    println!("cargo:rustc-env=VM0_IMAGE_PATH={}", vm0_image_path.display());
     println!("cargo:rustc-env=PLATFORM={}", config.platform.to_uppercase());
     Ok(())
 }
