@@ -83,6 +83,28 @@ fn vmm_load_image(vm: &Vm, bin: &[u8]) {
     copy_segment_to_vm(vm, vm.config().kernel_load_ipa(), bin);
 }
 
+struct BinaryInfo<'a> {
+    name: &'a str,
+    bin: &'a [u8],
+}
+
+static IMAGE_LIST: &[BinaryInfo] = &[
+    BinaryInfo {
+        name: env!("VM0_IMAGE_PATH"),
+        bin: include_bytes!(env!("VM0_IMAGE_PATH")),
+    },
+    #[cfg(feature = "static-config")]
+    BinaryInfo {
+        name: "Image_vanilla",
+        bin: include_bytes!("../../image/Image_vanilla"),
+    },
+    #[cfg(feature = "unishyper")]
+    BinaryInfo {
+        name: "Image_Unishyper",
+        bin: include_bytes!("../../image/Image_Unishyper"),
+    },
+];
+
 pub(super) fn vmm_init_image(vm: &Vm) -> bool {
     let vm_id = vm.id();
     let config = vm.config();
@@ -91,28 +113,11 @@ pub(super) fn vmm_init_image(vm: &Vm) -> bool {
     // Load GVM kernel image from shyper-cli, you may check it for more information.
     match vm.config().kernel_img_name() {
         Some(name) => {
-            if name == env!("VM0_IMAGE_PATH") {
-                trace!("MVM {} loading Image", vm.id());
-                vmm_load_image(vm, include_bytes!(env!("VM0_IMAGE_PATH")));
+            if let Some(image) = IMAGE_LIST.iter().find(|image| name == image.name) {
+                trace!("VM {} loading {}", vm.id(), name);
+                vmm_load_image(vm, image.bin);
             } else {
-                cfg_if::cfg_if! {
-                    if #[cfg(feature = "static-config")] {
-                        if name == "Image_vanilla" {
-                            trace!("VM {} loading default Linux Image", vm.id());
-                            vmm_load_image(vm, include_bytes!("../../image/Image_vanilla"));
-                        } else {
-                            warn!("Image {} is not supported", name);
-                        }
-                    } else if #[cfg(feature = "unishyper")] {
-                        if name == "Image_Unishyper" {
-                            vmm_load_image(vm, include_bytes!("../../image/Image_Unishyper"));
-                        } else {
-                            warn!("Image {} is not supported", name);
-                        }
-                    } else {
-                        panic!("Image {} is not supported", name);
-                    }
-                }
+                panic!("Image {} is not supported", name);
             }
         }
         None => {
