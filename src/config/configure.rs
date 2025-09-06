@@ -268,18 +268,6 @@ impl VmConfigEntry {
         &self.memory.region
     }
 
-    pub fn memory_color_bitmap(&self) -> usize {
-        if self.memory.colors.is_empty() {
-            usize::MAX
-        } else {
-            let mut color_bitmap = 0;
-            for color in &self.memory.colors {
-                color_bitmap |= 1 << *color;
-            }
-            color_bitmap
-        }
-    }
-
     fn add_memory_cfg(&mut self, ipa_start: usize, length: usize) {
         self.memory.region.push(VmRegion { ipa_start, length });
     }

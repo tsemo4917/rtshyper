@@ -36,6 +36,18 @@ fn vm_map_ipa2color_regions(vm: &Vm, vm_region: &VmRegion, color_regions: &[Colo
     }
 }
 
+fn color_array2bitmap(colors: &[usize]) -> usize {
+    if colors.is_empty() {
+        usize::MAX
+    } else {
+        let mut color_bitmap = 0;
+        for color in colors {
+            color_bitmap |= 1 << *color;
+        }
+        color_bitmap
+    }
+}
+
 fn vmm_init_memory(vm: Arc<Vm>) -> bool {
     let config = vm.config();
     // passthrough regions
@@ -56,8 +68,9 @@ fn vmm_init_memory(vm: Arc<Vm>) -> bool {
     }
     // normal memory regions
     let vm_memory_regions = config.memory_region();
+    let color_bitmap = color_array2bitmap(&config.memory.colors);
     for vm_region in vm_memory_regions.iter() {
-        match mem_region_alloc_colors(vm_region.length, config.memory_color_bitmap()) {
+        match mem_region_alloc_colors(vm_region.length, color_bitmap) {
             Ok(vm_color_regions) => {
                 assert!(!vm_color_regions.is_empty());
                 debug!("{:x?}", vm_color_regions);
@@ -67,8 +80,7 @@ fn vmm_init_memory(vm: Arc<Vm>) -> bool {
             Err(_) => {
                 error!(
                     "vmm_init_memory: mem_vm_region_alloc_by_colors failed, length {}, color bitmap {:#x}",
-                    vm_region.length,
-                    config.memory_color_bitmap()
+                    vm_region.length, color_bitmap
                 );
                 return false;
             }
