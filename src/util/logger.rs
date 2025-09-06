@@ -41,10 +41,11 @@ impl log::Log for SimpleLogger {
                 "{}",
                 with_color!(
                     level2color(record.level()),
-                    "[{sec:04}.{ms:03}]{}{}[{}] {}",
+                    "[{sec:04}.{ms:03}]{}{}[{}:{}] {}",
                     level,
                     crate::kernel::current_cpu().id,
-                    record.target(),
+                    record.file().unwrap_or("<unnamed>"),
+                    record.line().unwrap_or(0),
                     record.args()
                 )
             );
