@@ -87,6 +87,10 @@ pub unsafe fn setup_fdt_vm0(config: &VmConfigEntry, dtb: *mut core::ffi::c_void)
 }
 
 pub fn init_vm0_dtb(dtb: *mut core::ffi::c_void) {
+    if dtb.is_null() {
+        error!("dtb is null");
+        return;
+    }
     #[cfg(feature = "tx2")]
     unsafe {
         use fdt::*;
@@ -176,50 +180,56 @@ pub fn init_vm0_dtb(dtb: *mut core::ffi::c_void) {
         fdt_enlarge(dtb);
         fdt_clear_initrd(dtb);
         assert_eq!(fdt_disable_node(dtb, "/platform@c000000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/fw-cfg@9020000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/memory@40000000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000200\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000400\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000600\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000800\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000a00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000c00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a000e00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001200\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001400\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001600\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001800\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001a00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001c00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a001e00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002200\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002400\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002600\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002800\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002a00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002c00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a002e00\0".as_ptr()), 0);
-        // keep a003000 & a003200 for passthrough blk/net
-        // assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003000\0".as_ptr()), 0);
-        // assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003200\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003400\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003600\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003800\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003a00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003c00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/virtio_mmio@a003e00\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/gpio-keys\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/pl061@9030000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/pcie@10000000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/pl031@9010000\0".as_ptr()), 0);
-        // pass through the only one uart on qemu-system-aarch64
-        // assert_eq!(fdt_remove_node(dtb, "/pl011@9000000\0".as_ptr()), 0);
 
-        assert_eq!(fdt_remove_node(dtb, "/intc@8000000/v2m@8020000\0".as_ptr()), 0);
-        assert_eq!(fdt_remove_node(dtb, "/flash@0\0".as_ptr()), 0);
+        let remove_node_list = [
+            "/fw-cfg@9020000\0",
+            "/memory@40000000\0",
+            "/virtio_mmio@a000000\0",
+            "/virtio_mmio@a000200\0",
+            "/virtio_mmio@a000400\0",
+            "/virtio_mmio@a000600\0",
+            "/virtio_mmio@a000800\0",
+            "/virtio_mmio@a000a00\0",
+            "/virtio_mmio@a000c00\0",
+            "/virtio_mmio@a000e00\0",
+            "/virtio_mmio@a001000\0",
+            "/virtio_mmio@a001200\0",
+            "/virtio_mmio@a001400\0",
+            "/virtio_mmio@a001600\0",
+            "/virtio_mmio@a001800\0",
+            "/virtio_mmio@a001a00\0",
+            "/virtio_mmio@a001c00\0",
+            "/virtio_mmio@a001e00\0",
+            "/virtio_mmio@a002000\0",
+            "/virtio_mmio@a002200\0",
+            "/virtio_mmio@a002400\0",
+            "/virtio_mmio@a002600\0",
+            "/virtio_mmio@a002800\0",
+            "/virtio_mmio@a002a00\0",
+            "/virtio_mmio@a002c00\0",
+            "/virtio_mmio@a002e00\0",
+            // keep a003000 & a003200 for passthrough blk/net
+            // "/virtio_mmio@a003000\0",
+            // "/virtio_mmio@a003200\0",
+            "/virtio_mmio@a003400\0",
+            "/virtio_mmio@a003600\0",
+            "/virtio_mmio@a003800\0",
+            "/virtio_mmio@a003a00\0",
+            "/virtio_mmio@a003c00\0",
+            "/virtio_mmio@a003e00\0",
+            "/gpio-keys\0",
+            "/pl061@9030000\0",
+            "/pcie@10000000\0",
+            "/pl031@9010000\0",
+            // pass through the only one uart on qemu-system-aarch64
+            // "/pl011@9000000\0",
+            "/intc@8000000/v2m@8020000\0",
+            "/flash@0\0",
+        ];
+
+        for remove_node in remove_node_list {
+            assert_eq!(fdt_remove_node(dtb, remove_node.as_ptr()), 0);
+        }
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "memory-reservation")] {
