@@ -69,6 +69,14 @@ impl crate::arch::ContextFrameTrait for Aarch64ContextFrame {
 }
 
 impl Aarch64ContextFrame {
+    pub(crate) fn spsr(&self) -> u64 {
+        self.spsr
+    }
+
+    pub(crate) fn set_spsr(&mut self, spsr: u64) {
+        self.spsr = spsr;
+    }
+
     pub fn new_privileged() -> Self {
         Self {
             spsr: (SPSR_EL2::M::EL2h + SPSR_EL2::F::Masked + SPSR_EL2::A::Masked + SPSR_EL2::D::Masked).value,
@@ -210,6 +218,9 @@ impl VmContext {
         // MRS!(self.hpfar_el2, HPFAR_EL2);
         mrs!(self.actlr_el1, ACTLR_EL1);
         self.generic_timer.save();
+    }
+
+    pub(crate) fn save_fpsimd(&mut self) {
         unsafe {
             fpsimd_save_ctx(&mut self.fpsimd);
         }
@@ -250,6 +261,9 @@ impl VmContext {
         // MSR!(FAR_EL2, self.far_el2);
         // MSR!(HPFAR_EL2, self.hpfar_el2);
         msr!(ACTLR_EL1, self.actlr_el1);
+    }
+
+    pub(crate) fn restore_fpsimd(&self) {
         unsafe {
             fpsimd_restore_ctx(&self.fpsimd);
         }

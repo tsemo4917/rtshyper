@@ -202,6 +202,8 @@ pub fn lower_aarch64_synchronous(ctx: *mut ContextFrame) {
             hvc_handler();
         }
         Some(ESR_EL2::EC::Value::TrappedMsrMrs) => sysreg_handler(exception_iss() as u32),
+        Some(ESR_EL2::EC::Value::TrappedFP) => super::fpsimd::handle_trap(),
+        Some(ESR_EL2::EC::Value::TrappedSve) => super::fpsimd::handle_sve_trap(unsafe { &mut *ctx }),
         #[cfg(feature = "trap-wfi")]
         Some(ESR_EL2::EC::Value::TrappedWFIorWFE) => super::sync::wfi_wfe_handler(exception_iss() as u32),
         _ => unsafe {

@@ -1,0 +1,7 @@
+[package]
+name = "fp_switch"
+version = "0.1.0"
+edition = "2021"
+description = "Lazy FP ownership decisions shared by the hypervisor and its tests"
+
+[dependencies]

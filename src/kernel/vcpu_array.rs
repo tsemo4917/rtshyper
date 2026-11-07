@@ -150,6 +150,8 @@ impl VcpuArray {
                 }
                 // remove vcpu from scheduler
                 self.scheduler().remove(&vcpu);
+                // Before clearing active_vcpu: a removed owner must not keep the Vcpu Arc alive.
+                crate::arch::on_vcpu_remove(&vcpu);
                 if current_cpu().active_vcpu.as_ref() == Some(&vcpu) {
                     current_cpu().set_active_vcpu(None);
                     self.resched();

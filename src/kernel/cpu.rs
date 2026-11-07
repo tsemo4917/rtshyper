@@ -64,6 +64,10 @@ pub struct Cpu {
     pub interrupt_nested: usize,
     pub cpu_pt: CpuPt,
     stack: CpuStack,
+    // vCPU whose FP/SIMD registers are currently live on this core.
+    // Only the lazy-switch path updates it. Placed after `stack` so
+    // CPU_STACK_OFFSET stays page-aligned for the guard page.
+    fp_owner: Option<Vcpu>,
 }
 
 pub const CPU_STACK_OFFSET: usize = core::mem::offset_of!(Cpu, stack);
@@ -86,6 +90,7 @@ impl Cpu {
                 lvl3: [0; PTE_PER_PAGE],
             },
             stack: CpuStack::new(),
+            fp_owner: None,
         }
     }
 
@@ -156,6 +161,14 @@ impl Cpu {
 
     pub fn stack_top(&self) -> usize {
         self.stack.as_ptr_range().end as usize
+    }
+
+    pub(crate) fn fp_owner(&self) -> Option<&Vcpu> {
+        self.fp_owner.as_ref()
+    }
+
+    pub(crate) fn set_fp_owner(&mut self, owner: Option<Vcpu>) {
+        self.fp_owner = owner;
     }
 }
 

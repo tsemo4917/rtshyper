@@ -22,6 +22,8 @@ mod context_frame;
 mod cpu;
 #[allow(dead_code)]
 mod exception;
+mod fpsimd;
+pub use fpsimd::{on_idle, on_vcpu_enter, on_vcpu_remove};
 #[allow(dead_code)]
 mod gic;
 mod interface;

@@ -395,6 +395,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fp_switch"
+version = "0.1.0"
+
+[[package]]
 name = "gethostname"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -787,6 +791,7 @@ dependencies = [
  "fastrand",
  "fdt",
  "ffi_interface",
+ "fp_switch",
  "gethostname",
  "intrusive-collections",
  "log",

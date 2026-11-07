@@ -163,6 +163,9 @@ impl Vcpu {
         self.intc_restore_context();
 
         self.inject_int_inlist();
+        // TFP follows fp_owner. The guest's CPACR_EL1 was restored above and is
+        // left alone; it applies again once this vCPU owns the FP registers.
+        crate::arch::on_vcpu_enter(self);
     }
 
     pub fn intc_restore_context(&self) {
@@ -320,6 +323,7 @@ static IDLE_THREAD: Lazy<IdleThread> = Lazy::new(|| {
 });
 
 pub(super) fn run_idle_thread() {
+    crate::arch::on_idle();
     if let Some(ctx) = unsafe { current_cpu().current_ctx().as_mut() } {
         trace!("Core {} idle", current_cpu().id);
         current_cpu().cpu_state = CpuState::Idle;

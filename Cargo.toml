@@ -28,6 +28,7 @@ members = [
     "deps/raii",
     "deps/raii-derive",
     "deps/virtq",
+    "deps/fp_switch",
 ]
 
 [dependencies]
@@ -46,6 +47,7 @@ derive_more = "0.99.17"
 intrusive-collections = "0.9"
 cfg-if = "1.0.0"
 ffi_interface = { path = "deps/ffi_interface" }
+fp_switch = { path = "deps/fp_switch" }
 raii = { path = "deps/raii" }
 virtq = { path = "deps/virtq" }
 
