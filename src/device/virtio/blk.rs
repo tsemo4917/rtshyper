@@ -1,6 +1,7 @@
 use alloc::ffi::CString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::mem::{align_of, size_of};
 use spin::Mutex;
 
 use crate::arch::PAGE_SIZE;
@@ -9,6 +10,7 @@ use crate::kernel::{async_blk_io_req, async_ipi_req, AsyncTask, IpiMediatedMsg, 
 use crate::util::memcpy_safe;
 
 use super::mmio::VIRTIO_F_VERSION_1;
+use super::queue::VIRTIO_RING_F_INDIRECT_DESC;
 
 pub const VIRTQUEUE_BLK_MAX_SIZE: usize = 256;
 
@@ -33,7 +35,7 @@ pub const VIRTIO_BLK_S_OK: usize = 0;
 pub const VIRTIO_BLK_S_UNSUPP: usize = 2;
 
 pub fn blk_features() -> usize {
-    VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX
+    VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX | VIRTIO_RING_F_INDIRECT_DESC
 }
 
 #[repr(C)]
@@ -158,6 +160,14 @@ impl VirtioBlkReq {
     pub fn region_size(&self) -> usize {
         self.region.size
     }
+}
+
+/// On-wire virtio-blk request header (virtio spec: type, reserved, sector).
+#[repr(C)]
+struct BlkReqHeader {
+    req_type: u32,
+    _reserved: u32,
+    sector: u64,
 }
 
 #[repr(C)]
@@ -352,94 +362,135 @@ pub fn virtio_blk_notify_handler(vq: Arc<Virtq>, blk: Arc<VirtioMmio>, vm: Arc<V
     // let time0 = time_current_us();
 
     while let Some(head_idx) = vq.pop_avail_desc_idx(avail_idx) {
-        let mut next_desc_idx = head_idx as usize;
         vq.disable_notify();
         if vq.check_avail_idx(avail_idx) {
             vq.enable_notify();
         }
 
-        let mut head = true;
-        // desc_chain_head_idx = next_desc_idx;
-
-        // vq.show_desc_info(4, vm.clone());
+        let mut chain = match vq.desc_chain(head_idx, &vm) {
+            Ok(chain) => chain,
+            Err(e) => {
+                println!(
+                    "virtio_blk_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                blk.notify();
+                return false;
+            }
+        };
 
         let mut req_node = VirtioBlkReqNode::default();
-        req_node.desc_chain_head_idx = next_desc_idx as u32;
-        // println!(
-        //     "avail idx {} desc_chain_head {} avail flag {}",
-        //     vq.last_avail_idx() - 1,
-        //     req_node.desc_chain_head_idx,
-        //     vq.avail_flags()
-        // );
+        req_node.desc_chain_head_idx = head_idx as u32;
 
+        // header descriptor; a valid chain is at least header + status
+        let header = match chain.next() {
+            Some(Ok(desc)) => desc,
+            Some(Err(e)) => {
+                println!(
+                    "virtio_blk_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                blk.notify();
+                return false;
+            }
+            None => {
+                println!("virtio_blk_notify_handler: desc chain too short, head idx {}", head_idx);
+                blk.notify();
+                return false;
+            }
+        };
+        if header.writable() {
+            println!(
+                "Failed to get virt blk queue desc header, idx = {}, flag = {:x}",
+                head_idx, header.flags
+            );
+            blk.notify();
+            return false;
+        }
+        let vreq_addr = vm.ipa2hva(header.addr as usize);
+        if vreq_addr == 0
+            || (header.len as usize) < size_of::<BlkReqHeader>()
+            || vreq_addr % align_of::<BlkReqHeader>() != 0
+        {
+            println!("virtio_blk_notify_handler: failed to get vreq");
+            return false;
+        }
+        let vreq = unsafe { &*(vreq_addr as *const BlkReqHeader) };
+        req_node.req_type = vreq.req_type;
+        req_node.sector = vreq.sector as usize;
+
+        // Hold the latest descriptor as the status candidate. Every time
+        // another one follows, the candidate is a data descriptor instead.
+        let mut status = match chain.next() {
+            Some(Ok(desc)) => desc,
+            Some(Err(e)) => {
+                println!(
+                    "virtio_blk_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                blk.notify();
+                return false;
+            }
+            None => {
+                println!("virtio_blk_notify_handler: desc chain too short, head idx {}", head_idx);
+                blk.notify();
+                return false;
+            }
+        };
         loop {
-            if vq.desc_has_next(next_desc_idx) {
-                if head {
-                    if vq.desc_is_writable(next_desc_idx) {
-                        println!(
-                            "Failed to get virt blk queue desc header, idx = {}, flag = {:x}",
-                            next_desc_idx,
-                            vq.desc_flags(next_desc_idx)
-                        );
-                        blk.notify();
-                        return false;
-                    }
-                    head = false;
-                    let vreq_addr = vm.ipa2hva(vq.desc_addr(next_desc_idx));
-                    if vreq_addr == 0 {
-                        println!("virtio_blk_notify_handler: failed to get vreq");
-                        return false;
-                    }
-                    let vreq = unsafe { &*(vreq_addr as *const VirtioBlkReqNode) };
-                    req_node.req_type = vreq.req_type;
-                    req_node.sector = vreq.sector;
-                } else {
-                    /*data handler*/
-                    if (vq.desc_flags(next_desc_idx) & 0x2) as u32 >> 1 == req_node.req_type {
-                        println!(
-                            "Failed to get virt blk queue desc data, idx = {}, req.type = {}, desc.flags = {}",
-                            next_desc_idx,
-                            req_node.req_type,
-                            vq.desc_flags(next_desc_idx)
-                        );
-                        blk.notify();
-                        return false;
-                    }
-                    let data_bg = vm.ipa2hva(vq.desc_addr(next_desc_idx));
-                    if data_bg == 0 {
-                        println!("virtio_blk_notify_handler: failed to get iov data begin");
-                        return false;
-                    }
-
-                    let iov = BlkIov {
-                        data_bg,
-                        len: vq.desc_len(next_desc_idx),
-                    };
-                    req_node.iov_sum_up += iov.len as usize;
-                    req_node.iov.push(iov);
-                }
-            } else {
-                /*state handler*/
-                if !vq.desc_is_writable(next_desc_idx) {
-                    println!("Failed to get virt blk queue desc status, idx = {}", next_desc_idx);
+            let next = match chain.next() {
+                Some(Ok(desc)) => desc,
+                Some(Err(e)) => {
+                    println!(
+                        "virtio_blk_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                        head_idx, e
+                    );
                     blk.notify();
                     return false;
                 }
-                let vstatus_addr = vm.ipa2hva(vq.desc_addr(next_desc_idx));
-                if vstatus_addr == 0 {
-                    println!("virtio_blk_notify_handler: vm[{}] failed to vstatus", vm.id());
-                    return false;
-                }
-                let vstatus = unsafe { &mut *(vstatus_addr as *mut u8) };
-                if req_node.req_type > 1 && req_node.req_type != VIRTIO_BLK_T_GET_ID as u32 {
-                    *vstatus = VIRTIO_BLK_S_UNSUPP as u8;
-                } else {
-                    *vstatus = VIRTIO_BLK_S_OK as u8;
-                }
-                break;
+                None => break,
+            };
+            if status.writable() as u32 == req_node.req_type {
+                println!(
+                    "Failed to get virt blk queue desc data, req.type = {}, desc.flags = {}",
+                    req_node.req_type, status.flags
+                );
+                blk.notify();
+                return false;
             }
-            next_desc_idx = vq.desc_next(next_desc_idx) as usize;
+            let data_bg = vm.ipa2hva(status.addr as usize);
+            if data_bg == 0 {
+                println!("virtio_blk_notify_handler: failed to get iov data begin");
+                return false;
+            }
+
+            let iov = BlkIov {
+                data_bg,
+                len: status.len,
+            };
+            req_node.iov_sum_up += iov.len as usize;
+            req_node.iov.push(iov);
+            status = next;
         }
+
+        // status descriptor
+        if !status.writable() {
+            println!("Failed to get virt blk queue desc status, idx = {}", head_idx);
+            blk.notify();
+            return false;
+        }
+        let vstatus_addr = vm.ipa2hva(status.addr as usize);
+        if vstatus_addr == 0 {
+            println!("virtio_blk_notify_handler: vm[{}] failed to vstatus", vm.id());
+            return false;
+        }
+        let vstatus = unsafe { &mut *(vstatus_addr as *mut u8) };
+        if req_node.req_type > 1 && req_node.req_type != VIRTIO_BLK_T_GET_ID as u32 {
+            *vstatus = VIRTIO_BLK_S_UNSUPP as u8;
+        } else {
+            *vstatus = VIRTIO_BLK_S_OK as u8;
+        }
+
         req_node.iov_total = req_node.iov_sum_up;
         // req.add_req_node(req_node, &vm);
         req_node_list.push(req_node);

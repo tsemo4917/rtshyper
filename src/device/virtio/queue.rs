@@ -1,4 +1,5 @@
 use alloc::sync::{Arc, Weak};
+use core::mem::{align_of, size_of};
 use core::slice;
 
 use spin::Mutex;
@@ -6,11 +7,11 @@ use spin::Mutex;
 use crate::device::VirtioMmio;
 use crate::kernel::{active_vm, Vm};
 
+use virtq::VringDesc;
+
+pub use virtq::{ChainError, DescIter, VIRTIO_RING_F_INDIRECT_DESC};
+
 pub const VIRTQ_READY: usize = 1;
-/* This marks a buffer as continuing via the next field. */
-pub const VIRTQ_DESC_F_NEXT: u16 = 1;
-/* This marks a buffer as write-only (otherwise read-only). */
-pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 /* The device uses this in used->flags to advise the driver: don't kick me
  * when you add a buffer. It's unreliable, so it's simply an
@@ -18,19 +19,6 @@ pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 pub const VRING_USED_F_NO_NOTIFY: usize = 1;
 
 const DESC_QUEUE_SIZE: usize = 512;
-
-#[repr(C, align(16))]
-#[derive(Copy, Clone)]
-struct VringDesc {
-    /*Address (guest-physical)*/
-    addr: u64,
-    /* Length */
-    len: u32,
-    /* The flags as indicated above */
-    flags: u16,
-    /* We chain unused descriptors via this, too */
-    next: u16,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -138,16 +126,49 @@ impl Virtq {
         inner.last_avail_idx == avail_idx
     }
 
-    pub fn desc_is_writable(&self, idx: usize) -> bool {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].flags & VIRTQ_DESC_F_WRITE != 0
-    }
-
-    pub fn desc_has_next(&self, idx: usize) -> bool {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].flags & VIRTQ_DESC_F_NEXT != 0
+    /// Iterate the descriptor chain whose head is the avail ring entry
+    /// `head_idx`, including an indirect table when the head descriptor has
+    /// `VIRTQ_DESC_F_INDIRECT`.
+    ///
+    /// `vm` translates the guest-physical address of an indirect table. Each
+    /// step reads one descriptor in place; the indirect table is not copied.
+    /// The iterator never yields the indirect head itself. The used ring must
+    /// still be updated with the main-table `head_idx`.
+    ///
+    /// The `'static` lifetime does not borrow `self`. Descriptor memory lives
+    /// in the guest mapping, so a notify handler can still call queue methods
+    /// while iterating. The iterator must be finished before the queue is
+    /// reset; the mapping stays valid for the handler, the same assumption the
+    /// previous raw-pointer walks made.
+    pub fn desc_chain(&self, head_idx: u16, vm: &Vm) -> Result<DescIter<'static>, ChainError> {
+        let (table_ptr, num) = {
+            let inner = self.inner.lock();
+            match &inner.desc_table {
+                Some(table) => (table.as_ptr(), inner.num.min(DESC_QUEUE_SIZE)),
+                None => {
+                    println!("desc_chain: failed to get desc table");
+                    return Err(ChainError::HeadOutOfBounds);
+                }
+            }
+        };
+        // `num` is clamped to the table allocation. The slice outlives this
+        // function because the guest mapping does; see the method comment.
+        // An unaligned or empty table must not become a reference.
+        if num == 0 || table_ptr.is_null() || (table_ptr as usize) % align_of::<VringDesc>() != 0 {
+            println!("desc_chain: desc table is empty or unaligned");
+            return Err(ChainError::HeadOutOfBounds);
+        }
+        let desc_table: &'static [VringDesc] = unsafe { slice::from_raw_parts(table_ptr, num) };
+        virtq::iter_chain(desc_table, head_idx, |gpa, len| {
+            let hva = vm.ipa2hva(gpa as usize);
+            // VringDesc is align(16). An unaligned guest address would make
+            // the reference below undefined behavior.
+            if hva == 0 || hva % align_of::<VringDesc>() != 0 {
+                return None;
+            }
+            let count = (len as usize) / size_of::<VringDesc>();
+            Some(unsafe { slice::from_raw_parts(hva as *const VringDesc, count) })
+        })
     }
 
     pub fn update_used_ring(&self, len: u32, desc_chain_head_idx: u32) -> bool {
@@ -329,30 +350,6 @@ impl Virtq {
     pub fn num(&self) -> usize {
         let inner = self.inner.lock();
         inner.num
-    }
-
-    pub fn desc_addr(&self, idx: usize) -> usize {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].addr as usize
-    }
-
-    pub fn desc_flags(&self, idx: usize) -> u16 {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].flags
-    }
-
-    pub fn desc_next(&self, idx: usize) -> u16 {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].next
-    }
-
-    pub fn desc_len(&self, idx: usize) -> u32 {
-        let inner = self.inner.lock();
-        let desc_table = inner.desc_table.as_ref().unwrap();
-        desc_table[idx].len
     }
 
     pub fn avail_flags(&self) -> u16 {

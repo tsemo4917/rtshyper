@@ -1,0 +1,7 @@
+[package]
+name = "virtq"
+version = "0.1.0"
+edition = "2021"
+description = "Virtio split virtqueue descriptor chain walking with indirect descriptor support"
+
+[dependencies]

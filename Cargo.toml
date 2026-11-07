@@ -27,6 +27,7 @@ members = [
     "deps/ffi_interface",
     "deps/raii",
     "deps/raii-derive",
+    "deps/virtq",
 ]
 
 [dependencies]
@@ -46,6 +47,7 @@ intrusive-collections = "0.9"
 cfg-if = "1.0.0"
 ffi_interface = { path = "deps/ffi_interface" }
 raii = { path = "deps/raii" }
+virtq = { path = "deps/virtq" }
 
 # optional dependencies
 spin-irqsave = { package = "spin", path = "deps/spin", optional = true }

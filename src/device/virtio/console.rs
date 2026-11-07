@@ -11,6 +11,7 @@ use crate::util::round_down;
 use super::dev::DevDesc;
 use super::iov::VirtioIov;
 use super::mmio::VIRTIO_F_VERSION_1;
+use super::queue::VIRTIO_RING_F_INDIRECT_DESC;
 
 pub const VIRTQUEUE_CONSOLE_MAX_SIZE: usize = 64;
 
@@ -93,7 +94,7 @@ impl ConsoleDescInner {
 }
 
 pub fn console_features() -> usize {
-    VIRTIO_F_VERSION_1 | VIRTIO_CONSOLE_F_SIZE
+    VIRTIO_F_VERSION_1 | VIRTIO_CONSOLE_F_SIZE | VIRTIO_RING_F_INDIRECT_DESC
 }
 
 pub fn virtio_console_notify_handler(vq: Arc<Virtq>, console: Arc<VirtioMmio>, vm: Arc<Vm>) -> bool {
@@ -118,23 +119,38 @@ pub fn virtio_console_notify_handler(vq: Arc<Virtq>, console: Arc<VirtioMmio>, v
     };
 
     while let Some(head_idx) = vq.pop_avail_desc_idx(vq.avail_idx()) {
-        let mut idx = head_idx as usize;
         let mut len = 0;
         let mut tx_iov = VirtioIov::default();
 
-        loop {
-            let addr = vm.ipa2hva(vq.desc_addr(idx));
+        let chain = match vq.desc_chain(head_idx, &vm) {
+            Ok(chain) => chain,
+            Err(e) => {
+                println!(
+                    "virtio_console_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                return false;
+            }
+        };
+        for desc in chain {
+            let desc = match desc {
+                Ok(desc) => desc,
+                Err(e) => {
+                    println!(
+                        "virtio_console_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                        head_idx, e
+                    );
+                    return false;
+                }
+            };
+            let addr = vm.ipa2hva(desc.addr as usize);
             if addr == 0 {
                 println!("virtio_console_notify_handler: failed to desc addr");
                 return false;
             }
-            tx_iov.push_data(addr, vq.desc_len(idx) as usize);
+            tx_iov.push_data(addr, desc.len as usize);
 
-            len += vq.desc_len(idx) as usize;
-            if vq.desc_flags(idx) == 0 {
-                break;
-            }
-            idx = vq.desc_next(idx) as usize;
+            len += desc.len as usize;
         }
 
         if !virtio_console_recv(trgt_vmid, trgt_console_ipa, tx_iov, len) {
@@ -205,24 +221,42 @@ fn virtio_console_recv(trgt_vmid: u16, trgt_console_ipa: u64, tx_iov: VirtioIov,
     }
 
     let desc_idx_header = desc_header_idx_opt.unwrap();
-    let mut desc_idx = desc_header_idx_opt.unwrap() as usize;
     let mut rx_iov = VirtioIov::default();
     let mut rx_len = 0;
-    loop {
-        let dst = trgt_vm.ipa2hva(rx_vq.desc_addr(desc_idx));
+    let chain = match rx_vq.desc_chain(desc_idx_header, &trgt_vm) {
+        Ok(chain) => chain,
+        Err(e) => {
+            println!(
+                "virtio_console_recv: invalid desc chain, head idx {}, err {:?}",
+                desc_idx_header, e
+            );
+            return false;
+        }
+    };
+    for desc in chain {
+        let desc = match desc {
+            Ok(desc) => desc,
+            Err(e) => {
+                println!(
+                    "virtio_console_recv: invalid desc chain, head idx {}, err {:?}",
+                    desc_idx_header, e
+                );
+                return false;
+            }
+        };
+        let dst = trgt_vm.ipa2hva(desc.addr as usize);
         if dst == 0 {
             println!(
-                "virtio_console_recv: failed to get dst, desc_idx {}, avail idx {}",
-                desc_idx,
+                "virtio_console_recv: failed to get dst, avail idx {}",
                 rx_vq.avail_idx()
             );
             return false;
         }
-        let desc_len = rx_vq.desc_len(desc_idx) as usize;
+        let desc_len = desc.len as usize;
         // dirty pages
         if trgt_vmid != 0 {
-            let mut ipa_addr = round_down(rx_vq.desc_addr(desc_idx), PAGE_SIZE);
-            while ipa_addr <= round_down(rx_vq.desc_addr(desc_idx) + desc_len, PAGE_SIZE) {
+            let mut ipa_addr = round_down(desc.addr as usize, PAGE_SIZE);
+            while ipa_addr <= round_down(desc.addr as usize + desc_len, PAGE_SIZE) {
                 ipa_addr += PAGE_SIZE;
             }
         }
@@ -231,10 +265,6 @@ fn virtio_console_recv(trgt_vmid: u16, trgt_console_ipa: u64, tx_iov: VirtioIov,
         if rx_len >= len {
             break;
         }
-        if rx_vq.desc_flags(desc_idx) & 0x1 == 0 {
-            break;
-        }
-        desc_idx = rx_vq.desc_next(desc_idx) as usize;
     }
 
     if rx_len < len {

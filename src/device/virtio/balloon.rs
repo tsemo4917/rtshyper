@@ -6,7 +6,7 @@ use core::{mem::size_of, ops::Deref};
 use crate::device::EmuContext;
 use crate::kernel::Vm;
 
-use super::{iov::VirtioIov, mmio::VIRTIO_F_VERSION_1, VirtioMmio, Virtq};
+use super::{iov::VirtioIov, mmio::VIRTIO_F_VERSION_1, queue::VIRTIO_RING_F_INDIRECT_DESC, VirtioMmio, Virtq};
 
 // Size of a PFN in the balloon interface.
 const VIRTIO_BALLOON_PFN_SHIFT: usize = 12;
@@ -26,7 +26,7 @@ impl From<Features> for u64 {
 }
 
 pub fn balloon_features() -> usize {
-    VIRTIO_F_VERSION_1 | u64::from(Features::VIRTIO_BALLOON_F_MUST_TELL_HOST) as usize
+    VIRTIO_F_VERSION_1 | u64::from(Features::VIRTIO_BALLOON_F_MUST_TELL_HOST) as usize | VIRTIO_RING_F_INDIRECT_DESC
     // | u64::from(Features::VIRTIO_BALLOON_F_DEFLATE_ON_OOM) as usize
 }
 
@@ -89,21 +89,36 @@ pub fn virtio_balloon_notify_handler(vq: Arc<Virtq>, balloon: Arc<VirtioMmio>, v
     }
 
     while let Some(next_desc_idx) = vq.pop_avail_desc_idx(vq.avail_idx()) {
-        let mut idx = next_desc_idx as usize;
         let mut len = 0;
         let mut iov = VirtioIov::default();
-        loop {
-            let addr = vm.ipa2hva(vq.desc_addr(idx));
+        let chain = match vq.desc_chain(next_desc_idx, &vm) {
+            Ok(chain) => chain,
+            Err(e) => {
+                println!(
+                    "virtio_balloon_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    next_desc_idx, e
+                );
+                return false;
+            }
+        };
+        for desc in chain {
+            let desc = match desc {
+                Ok(desc) => desc,
+                Err(e) => {
+                    println!(
+                        "virtio_balloon_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                        next_desc_idx, e
+                    );
+                    return false;
+                }
+            };
+            let addr = vm.ipa2hva(desc.addr as usize);
             if addr == 0 {
                 return false;
             }
-            let desc_len = vq.desc_len(idx) as usize;
+            let desc_len = desc.len as usize;
             iov.push_data(addr, desc_len);
             len += desc_len;
-            if vq.desc_flags(idx) == 0 {
-                break;
-            }
-            idx = vq.desc_next(idx) as usize;
         }
         match vq.vq_indx() {
             0 => release_memory_range(&vm, &iov),

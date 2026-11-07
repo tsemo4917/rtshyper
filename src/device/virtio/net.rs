@@ -12,7 +12,7 @@ use crate::kernel::{ipi_send_msg, IpiEthernetMsg, IpiInnerMsg, IpiType};
 use super::dev::DevDesc;
 use super::iov::VirtioIov;
 use super::mmio::VIRTIO_F_VERSION_1;
-use super::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
+use super::queue::VIRTIO_RING_F_INDIRECT_DESC;
 
 pub const VIRTQUEUE_NET_MAX_SIZE: usize = 256;
 
@@ -146,6 +146,7 @@ pub fn net_features() -> usize {
         | VIRTIO_NET_F_CTRL_VQ
         | VIRTIO_NET_F_GUEST_ANNOUNCE
         | VIRTIO_NET_F_STATUS
+        | VIRTIO_RING_F_INDIRECT_DESC
 }
 
 const VIRTIO_NET_CTRL_ANNOUNCE: u8 = 3;
@@ -158,27 +159,42 @@ pub fn virtio_net_handle_ctrl(vq: Arc<Virtq>, nic: Arc<VirtioMmio>, vm: Arc<Vm>)
     }
 
     while let Some(head_idx) = vq.pop_avail_desc_idx(vq.avail_idx()) {
-        let mut idx = head_idx as usize;
         let mut len = 0;
         let mut out_iov = VirtioIov::default();
         let mut in_iov = VirtioIov::default();
 
-        loop {
-            let addr = vm.ipa2hva(vq.desc_addr(idx));
+        let chain = match vq.desc_chain(head_idx, &vm) {
+            Ok(chain) => chain,
+            Err(e) => {
+                println!(
+                    "virtio_net_handle_ctrl: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                return false;
+            }
+        };
+        for desc in chain {
+            let desc = match desc {
+                Ok(desc) => desc,
+                Err(e) => {
+                    println!(
+                        "virtio_net_handle_ctrl: invalid desc chain, head idx {}, err {:?}",
+                        head_idx, e
+                    );
+                    return false;
+                }
+            };
+            let addr = vm.ipa2hva(desc.addr as usize);
             if addr == 0 {
                 println!("virtio_net_handle_ctrl: failed to desc addr");
                 return false;
             }
-            if vq.desc_flags(idx) & VIRTQ_DESC_F_WRITE != 0 {
-                in_iov.push_data(addr, vq.desc_len(idx) as usize);
+            if desc.writable() {
+                in_iov.push_data(addr, desc.len as usize);
             } else {
-                out_iov.push_data(addr, vq.desc_len(idx) as usize);
+                out_iov.push_data(addr, desc.len as usize);
             }
-            len += vq.desc_len(idx) as usize;
-            if vq.desc_flags(idx) != VIRTQ_DESC_F_NEXT {
-                break;
-            }
-            idx = vq.desc_next(idx) as usize;
+            len += desc.len as usize;
         }
         let ctrl = VirtioNetCtrlHdr::default();
         out_iov.copy_to_buf(&ctrl as *const _ as usize, size_of::<VirtioNetCtrlHdr>());
@@ -227,23 +243,38 @@ pub fn virtio_net_notify_handler(vq: Arc<Virtq>, nic: Arc<VirtioMmio>, vm: alloc
     let mut nics_to_notify = vec![];
 
     while let Some(head_idx) = vq.pop_avail_desc_idx(vq.avail_idx()) {
-        let mut idx = head_idx as usize;
         let mut len = 0;
         let mut tx_iov = VirtioIov::default();
 
-        loop {
-            let addr = vm.ipa2hva(vq.desc_addr(idx));
+        let chain = match vq.desc_chain(head_idx, &vm) {
+            Ok(chain) => chain,
+            Err(e) => {
+                println!(
+                    "virtio_net_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                    head_idx, e
+                );
+                return false;
+            }
+        };
+        for desc in chain {
+            let desc = match desc {
+                Ok(desc) => desc,
+                Err(e) => {
+                    println!(
+                        "virtio_net_notify_handler: invalid desc chain, head idx {}, err {:?}",
+                        head_idx, e
+                    );
+                    return false;
+                }
+            };
+            let addr = vm.ipa2hva(desc.addr as usize);
             if addr == 0 {
                 println!("virtio_net_notify_handler: failed to desc addr");
                 return false;
             }
-            tx_iov.push_data(addr, vq.desc_len(idx) as usize);
+            tx_iov.push_data(addr, desc.len as usize);
 
-            len += vq.desc_len(idx) as usize;
-            if vq.desc_flags(idx) == 0 {
-                break;
-            }
-            idx = vq.desc_next(idx) as usize;
+            len += desc.len as usize;
         }
 
         if let Some(list) = ethernet_transmit(tx_iov, len, &vm) {
@@ -401,34 +432,48 @@ fn ethernet_send_to(vm: &Vm, nic: &VirtioMmio, tx_iov: &VirtioIov, len: usize) -
     }
 
     let desc_idx_header = desc_header_idx_opt.unwrap();
-    let mut desc_idx = desc_header_idx_opt.unwrap() as usize;
     let mut rx_iov = VirtioIov::default();
     let mut rx_len = 0;
 
-    loop {
-        let dst = vm.ipa2hva(rx_vq.desc_addr(desc_idx));
+    let chain = match rx_vq.desc_chain(desc_idx_header, vm) {
+        Ok(chain) => chain,
+        Err(e) => {
+            println!(
+                "ethernet_send_to: invalid desc chain, head idx {}, err {:?}",
+                desc_idx_header, e
+            );
+            return false;
+        }
+    };
+    for desc in chain {
+        let desc = match desc {
+            Ok(desc) => desc,
+            Err(e) => {
+                println!(
+                    "ethernet_send_to: invalid desc chain, head idx {}, err {:?}",
+                    desc_idx_header, e
+                );
+                return false;
+            }
+        };
+        let dst = vm.ipa2hva(desc.addr as usize);
         if dst == 0 {
             println!(
-                "rx_vq desc base table addr {:#x}, idx {}, avail table addr {:#x}, avail last idx {}",
+                "rx_vq desc base table addr {:#x}, avail table addr {:#x}, avail last idx {}",
                 rx_vq.desc_table_addr(),
-                desc_idx,
                 rx_vq.avail_addr(),
                 rx_vq.avail_idx()
             );
             println!("ethernet_send_to: failed to get dst {}", vm.id());
             return false;
         }
-        let desc_len = rx_vq.desc_len(desc_idx) as usize;
+        let desc_len = desc.len as usize;
 
         rx_iov.push_data(dst, desc_len);
         rx_len += desc_len;
         if rx_len >= len {
             break;
         }
-        if rx_vq.desc_flags(desc_idx) & 0x1 == 0 {
-            break;
-        }
-        desc_idx = rx_vq.desc_next(desc_idx) as usize;
     }
 
     if rx_len < len {
