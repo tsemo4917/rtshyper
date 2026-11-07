@@ -41,7 +41,8 @@ QEMU = qemu-system-$(ARCH)
 
 IMAGE=rtshyper_rs
 
-TARGET_DIR=target/${ARCH}/${PROFILE}
+# 内置 target 的产物目录按完整 triple 命名，不再是 target/${ARCH}/
+TARGET_DIR=target/aarch64-unknown-none-softfloat/${PROFILE}
 
 TFTP_SERVER ?= root@192.168.106.153:/tftp
 
@@ -50,7 +51,7 @@ UBOOT_IMAGE ?= RTShyperImage
 CARGO_ACTION ?= build
 
 # Cargo flags.
-CARGO_FLAGS ?= -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --target ${ARCH}.json --no-default-features --features "${BOARD},${FEATURES}"
+CARGO_FLAGS ?= --no-default-features --features "${BOARD},${FEATURES}"
 ifeq (${PROFILE}, release)
 CARGO_FLAGS += --release
 else ifneq (${PROFILE}, debug)

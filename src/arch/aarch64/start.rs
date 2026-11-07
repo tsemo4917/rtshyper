@@ -25,11 +25,11 @@ extern "C" {
     fn vectors();
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
-#[link_section = ".text.boot"]
+#[link_section = ".text.boot.entry"]
 unsafe extern "C" fn _start() -> ! {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         r#"
         mov x20, x0 // save fdt pointer to x20
 
@@ -100,15 +100,14 @@ unsafe extern "C" fn _start() -> ! {
         CPU_STACK_OFFSET = const CPU_STACK_OFFSET + CPU_STACK_SIZE,
         CONTEXT_SIZE = const core::mem::size_of::<crate::arch::ContextFrame>(),
         init = sym crate::init,
-        options(noreturn)
     );
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".text.boot"]
 unsafe extern "C" fn _secondary_start() -> ! {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         r#"
         mov x19, x0 // save core id to x19
 
@@ -164,7 +163,6 @@ unsafe extern "C" fn _secondary_start() -> ! {
         CONTEXT_SIZE = const core::mem::size_of::<crate::arch::ContextFrame>(),
         init_sysregs = sym init_sysregs,
         init = sym crate::init,
-        options(noreturn)
     );
 }
 

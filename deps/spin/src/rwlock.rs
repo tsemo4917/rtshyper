@@ -210,7 +210,7 @@ impl<T: ?Sized, R: RelaxStrategy> RwLock<T, R> {
     /// }
     /// ```
     #[inline]
-    pub fn read(&self) -> RwLockReadGuard<T> {
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
         loop {
             match self.try_read() {
                 Some(guard) => return guard,
@@ -238,7 +238,7 @@ impl<T: ?Sized, R: RelaxStrategy> RwLock<T, R> {
     /// }
     /// ```
     #[inline]
-    pub fn write(&self) -> RwLockWriteGuard<T, R> {
+    pub fn write(&self) -> RwLockWriteGuard<'_, T, R> {
         loop {
             match self.try_write_internal(false) {
                 Some(guard) => return guard,
@@ -250,7 +250,7 @@ impl<T: ?Sized, R: RelaxStrategy> RwLock<T, R> {
     /// Obtain a readable lock guard that can later be upgraded to a writable lock guard.
     /// Upgrades can be done through the [`RwLockUpgradableGuard::upgrade`](RwLockUpgradableGuard::upgrade) method.
     #[inline]
-    pub fn upgradeable_read(&self) -> RwLockUpgradableGuard<T, R> {
+    pub fn upgradeable_read(&self) -> RwLockUpgradableGuard<'_, T, R> {
         loop {
             match self.try_upgradeable_read() {
                 Some(guard) => return guard,
@@ -264,7 +264,7 @@ impl<T: ?Sized, R> RwLock<T, R> {
     // Acquire a read lock, returning the new lock value.
     fn acquire_reader(&self) -> usize {
         // An arbitrary cap that allows us to catch overflows long before they happen
-        const MAX_READERS: usize = core::usize::MAX / READER / 2;
+        const MAX_READERS: usize = usize::MAX / READER / 2;
 
         let value = self.lock.fetch_add(READER, Ordering::Acquire);
 
@@ -299,7 +299,7 @@ impl<T: ?Sized, R> RwLock<T, R> {
     /// }
     /// ```
     #[inline]
-    pub fn try_read(&self) -> Option<RwLockReadGuard<T>> {
+    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
         let irq = crate::preempt::preempt_disable();
         let value = self.acquire_reader();
 
@@ -371,7 +371,7 @@ impl<T: ?Sized, R> RwLock<T, R> {
     }
 
     #[inline(always)]
-    fn try_write_internal(&self, strong: bool) -> Option<RwLockWriteGuard<T, R>> {
+    fn try_write_internal(&self, strong: bool) -> Option<RwLockWriteGuard<'_, T, R>> {
         let irq = crate::preempt::preempt_disable();
         if compare_exchange(&self.lock, 0, WRITER, Ordering::Acquire, Ordering::Relaxed, strong).is_ok() {
             Some(RwLockWriteGuard {
@@ -406,13 +406,13 @@ impl<T: ?Sized, R> RwLock<T, R> {
     /// }
     /// ```
     #[inline]
-    pub fn try_write(&self) -> Option<RwLockWriteGuard<T, R>> {
+    pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T, R>> {
         self.try_write_internal(true)
     }
 
     /// Tries to obtain an upgradeable lock guard.
     #[inline]
-    pub fn try_upgradeable_read(&self) -> Option<RwLockUpgradableGuard<T, R>> {
+    pub fn try_upgradeable_read(&self) -> Option<RwLockUpgradableGuard<'_, T, R>> {
         let irq = crate::preempt::preempt_disable();
         if self.lock.fetch_or(UPGRADED, Ordering::Acquire) & (WRITER | UPGRADED) == 0 {
             Some(RwLockUpgradableGuard {

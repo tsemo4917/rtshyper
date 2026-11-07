@@ -6,6 +6,9 @@ SECTIONS
     _image_start = ABSOLUTE(.);
 
     .text : {
+        /* 入口必须固定在镜像起始处：QEMU -kernel 与 mkimage -e 都跳到 TEXT_START，
+           不能依赖编译器的 section 发射顺序 */
+        *(.text.boot.entry)
         *(.text.boot)
         *(.text*)
     }

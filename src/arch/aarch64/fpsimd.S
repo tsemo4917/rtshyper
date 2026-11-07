@@ -6,6 +6,11 @@
  * Author: Catalin Marinas <catalin.marinas@arm.com>
  */
 
+/* The softfloat target disables fp/simd for codegen; re-enable them here
+ * so the assembler accepts the guest FP/SIMD context switch code. */
+.arch_extension fp
+.arch_extension simd
+
 .macro fpsimd_save state, tmpnr
 	stp	q0, q1, [\state, #16 * 0]
 	stp	q2, q3, [\state, #16 * 2]

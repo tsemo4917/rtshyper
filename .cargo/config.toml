@@ -1,7 +1,15 @@
 [build]
-target = "aarch64.json"
-rustflags = ["-C", "llvm-args=-global-isel=false"]
+target = "aarch64-unknown-none-softfloat"
 
-[unstable]
-build-std = ["core", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+# 按 target 限定：放在 [build] 下会同时作用于宿主编译（build.rs、cargo test）
+[target.aarch64-unknown-none-softfloat]
+rustflags = ["-C", "llvm-args=-global-isel=false", "-C", "code-model=large"]
+
+# 与 Makefile 中的导出保持一致：直接运行 cargo（不走 make）时，
+# cc crate 也能找到交叉编译器，避免 C 源被编成宿主 x86-64 目标文件。
+# 已设置同名环境变量时（如经 make 调用）不覆盖。
+[env]
+CROSS_COMPILE = "aarch64-none-elf-"
+CFLAGS = "-ffreestanding -mgeneral-regs-only"
+# 默认值，不覆盖 make 命令行传入的值（qemu 0x40080000 / pi4 0xF0080000）
+TEXT_START = "0x83000000"

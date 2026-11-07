@@ -84,7 +84,7 @@ pub mod static_array_rb_tree {
         /// If there is no space left in the array, an `Err` containing the given `value` is returned.
         ///
         /// If success
-        pub fn insert(&mut self, value: T) -> Result<ValueRefMut<T>, T> {
+        pub fn insert(&mut self, value: T) -> Result<ValueRefMut<'_, T>, T> {
             match &mut self.0 {
                 Inner::Array(arr) => {
                     for elem in arr {

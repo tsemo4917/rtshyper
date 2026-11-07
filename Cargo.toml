@@ -34,7 +34,7 @@ shyper = { git = "https://github.com/tsemo4917/libshyper" }
 fdt = { path = "deps/libfdt-binding" }
 spin = { version = "0.9.8" }
 buddy_system_allocator = { version = "0.9.0", default-features = false }
-vm-fdt = { git = "https://github.com/migu4917/vm-fdt", features = ["alloc"] }
+vm-fdt = { version = "0.3", default-features = false, features = ["alloc"] }
 log = { version = "0.4", features = [
     "max_level_info",
     "release_max_level_info",
@@ -56,6 +56,7 @@ fastrand = { version = "2.0.0", default-features = false, features = [
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "10.0.0"
 smccc = "0.1.1"
+
 
 [features]
 default = ["tx2"]

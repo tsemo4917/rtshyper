@@ -175,7 +175,7 @@ impl<T: ?Sized, R: RelaxStrategy> SpinMutex<T, R> {
     /// }
     /// ```
     #[inline(always)]
-    pub fn lock(&self) -> SpinMutexGuard<T> {
+    pub fn lock(&self) -> SpinMutexGuard<'_, T> {
         // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
         // when called in a loop.
         let irq = crate::preempt::preempt_disable();
@@ -238,7 +238,7 @@ impl<T: ?Sized, R> SpinMutex<T, R> {
     /// assert!(maybe_guard2.is_none());
     /// ```
     #[inline(always)]
-    pub fn try_lock(&self) -> Option<SpinMutexGuard<T>> {
+    pub fn try_lock(&self) -> Option<SpinMutexGuard<'_, T>> {
         // The reason for using a strong compare_exchange is explained here:
         // https://github.com/Amanieu/parking_lot/pull/207#issuecomment-575869107
         let irq = crate::preempt::preempt_disable();

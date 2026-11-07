@@ -11,7 +11,7 @@ use crate::arch::{
 use crate::board::*;
 use crate::kernel::Cpu;
 use crate::mm::vpage_allocator::{vpage_alloc, AllocatedPages, CPU_BANKED_ADDRESS};
-use crate::mm::{PageFrame, _image_end, _image_start, heap_expansion};
+use crate::mm::{_image_end, _image_start, heap_expansion, PageFrame};
 use crate::util::{barrier, reset_barrier, round_up};
 
 use super::{current_cpu, CPU_MASTER};

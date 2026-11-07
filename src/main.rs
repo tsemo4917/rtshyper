@@ -1,13 +1,14 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
-#![feature(alloc_error_handler)]
-#![feature(inline_const)]
-#![feature(naked_functions)]
-#![feature(asm_const)]
-#![feature(extract_if)]
-#![feature(offset_of)]
-#![feature(const_binary_heap_constructor)]
+// tock-registers 的 register_structs! 宏展开会产生大量嵌套 const 断言，
+// 新版 rustc 默认的查询深度上限(128)不够用（tx2/iommu 的 smmu 寄存器块触发）
+#![recursion_limit = "256"]
 #![allow(unused_doc_comments)]
+// 裸机代码的固有模式，不是真问题：
+// - dead_code: 寄存器定义、trait 接口、板级常量等按设计保留的 API
+// - function_casts_as_integer: 取函数/符号地址作为物理地址传给固件或页表
+// - static_mut_refs: 早期启动与全局分配器对 static mut 的访问
+#![allow(dead_code, function_casts_as_integer, static_mut_refs)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::modulo_one)]
 

@@ -55,8 +55,3 @@ pub fn heap_expansion(region: RangeInclusive<usize>) {
         HEAP_ALLOCATOR.lock().add_to_heap(*region.start(), *region.end() + 1);
     }
 }
-
-#[alloc_error_handler]
-fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-    panic!("Out Of Memory: Heap allocation error, layout = {:x?}", layout);
-}
