@@ -39,6 +39,9 @@ pub trait TlbInvalidate {
     fn invalid_hypervisor_all();
     fn invalid_guest_ipa(ipa: usize);
     fn invalid_guest_all();
+    // Same as `invalid_guest_all`, but for the VM identified by the stage-2
+    // page table `base` and `vmid`, regardless of the VM current running.
+    fn invalid_guest_all_by_vmid(base: usize, vmid: usize);
 }
 
 pub trait CacheInvalidate {
