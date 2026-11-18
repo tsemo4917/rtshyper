@@ -300,7 +300,7 @@ fn mem_region_init_by_colors() {
                 let size = range.end - start;
                 (start, size)
             } else {
-                (range.start, range.end)
+                (range.start, range.end - range.start)
             }
         };
         if plat_mem_region_size == 0 {
