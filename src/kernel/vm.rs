@@ -6,7 +6,7 @@ use spin::{Mutex, Once};
 
 use crate::arch::PageTable;
 use crate::arch::Vgic;
-use crate::arch::{emu_intc_init, HYP_VA_SIZE, VM_IPA_SIZE};
+use crate::arch::{emu_intc_init, Arch, TlbInvalidate, HYP_VA_SIZE, VM_IPA_SIZE};
 use crate::config::VmConfigEntry;
 use crate::device::{emu_virtio_mmio_init, EmuDev};
 use crate::kernel::{mem_color_region_free, shyper_init};
@@ -504,6 +504,13 @@ impl Vm {
         }
         let pa = self.ipa2pa(guest_addr).unwrap();
         debug!("inflate_balloon: remove guest_addr {guest_addr:#x} -> pa {pa:#x}");
+        // Revoke the stage-2 translation before the page goes back to the
+        // color pool: `split` publishes the page as available, so another VM
+        // can take it while this VM is still able to reach it. The by-VMID
+        // invalidation also drops combined stage-1+stage-2 entries, which an
+        // IPA-based invalidation alone does not clear.
+        self.pt_unmap_range(guest_addr, len, false);
+        Arch::invalid_guest_all_by_vmid(self.pt_dir(), self.id());
         let mut inner = self.inner_mut.lock();
         let mut tmp = vec![];
         for region in inner.color_pa_info.region_list.iter_mut() {
@@ -517,8 +524,6 @@ impl Vm {
         inner.color_pa_info.region_list.retain(|region| !region.is_empty());
         inner.color_pa_info.region_list.append(&mut tmp);
         inner.balloon.push(guest_addr);
-        drop(inner);
-        self.pt_unmap_range(guest_addr, len, false);
     }
 }
 
