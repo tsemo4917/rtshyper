@@ -207,14 +207,56 @@ fn ipi_irq_handler() {
     let cpu_id = current_cpu().id;
 
     while let Some(ipi_msg) = ipi_pop_message(cpu_id) {
-        let ipi_type = ipi_msg.ipi_type;
+        ipi_dispatch(ipi_msg);
+    }
+}
 
-        if let Some(handler) = IPI_HANDLER_LIST.get(ipi_type as usize) {
-            handler(ipi_msg);
-        } else {
-            error!("illegal ipi type {:?}", ipi_type)
+fn ipi_dispatch(ipi_msg: IpiMessage) {
+    let ipi_type = ipi_msg.ipi_type;
+
+    if let Some(handler) = IPI_HANDLER_LIST.get(ipi_type as usize) {
+        handler(ipi_msg);
+    } else {
+        error!("illegal ipi type {:?}", ipi_type)
+    }
+}
+
+// Handle only the IPI messages an EL2 wait loop can run without affecting
+// the waiter itself: the MapIPA broadcast of a VM create. That handler only
+// installs page-table entries for a brand-new VM on this core -- never the
+// waiter's own VM, whose mappings and exception frame stay untouched -- and
+// ends in the all-core barrier the waiter would otherwise stall until its
+// wait is over. Every other message (the unmap and cpu removal of a VM
+// remove, which may hit the waiter's own VM and frame, vcpu wakeups, device
+// and injection work) stays queued for the normal interrupt path once the
+// wait returns, exactly as before; the loop stops at the first queued
+// message that is not MapIPA, so the FIFO order is preserved. Callers run
+// with interrupts masked, so nothing can change the queue between the peek
+// and the pop.
+//
+// Only waits that hold no lock of their own may call this: arriving at the
+// barrier while holding, e.g., the unilib list lock would make releasing
+// that lock depend on every other core arriving.
+pub fn ipi_process_pending() {
+    let cpu_id = current_cpu().id;
+
+    while ipi_front_is_mapipa(cpu_id) {
+        match ipi_pop_message(cpu_id) {
+            Some(ipi_msg) => ipi_dispatch(ipi_msg),
+            None => break,
         }
     }
+}
+
+fn ipi_front_is_mapipa(cpu_id: usize) -> bool {
+    let cpu_if = CPU_IF_LIST[cpu_id].lock();
+    matches!(
+        cpu_if.msg_queue.front(),
+        Some(IpiMessage {
+            ipi_message: IpiInnerMsg::VmmPercoreMsg(msg),
+            ..
+        }) if matches!(msg.event, VmmPercoreEvent::MapIPA)
+    )
 }
 
 fn ipi_send(target_id: usize, msg: IpiMessage) -> bool {
