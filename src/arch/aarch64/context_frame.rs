@@ -140,7 +140,7 @@ pub struct VmContext {
     sp_el1: u64,
     elr_el1: u64,
     spsr_el1: u32,
-    sctlr_el1: u32,
+    sctlr_el1: u64,
     actlr_el1: u64,
     cpacr_el1: u32,
     ttbr0_el1: u64,
@@ -192,7 +192,7 @@ impl VmContext {
         mrs!(self.sp_el1, SP_EL1);
         mrs!(self.elr_el1, ELR_EL1);
         mrs!(self.spsr_el1, SPSR_EL1, "x");
-        mrs!(self.sctlr_el1, SCTLR_EL1, "x");
+        mrs!(self.sctlr_el1, SCTLR_EL1);
         mrs!(self.cpacr_el1, CPACR_EL1, "x");
         mrs!(self.ttbr0_el1, TTBR0_EL1);
         mrs!(self.ttbr1_el1, TTBR1_EL1);
@@ -236,7 +236,7 @@ impl VmContext {
         msr!(SP_EL1, self.sp_el1);
         msr!(ELR_EL1, self.elr_el1);
         msr!(SPSR_EL1, self.spsr_el1, "x");
-        msr!(SCTLR_EL1, self.sctlr_el1, "x");
+        msr!(SCTLR_EL1, self.sctlr_el1);
         msr!(CPACR_EL1, self.cpacr_el1, "x");
         msr!(TTBR0_EL1, self.ttbr0_el1);
         msr!(TTBR1_EL1, self.ttbr1_el1);
