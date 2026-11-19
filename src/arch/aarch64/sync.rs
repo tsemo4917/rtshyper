@@ -18,21 +18,35 @@ pub fn data_abort_handler() {
 
     if !exception_data_abort_is_translate_fault() {
         if exception_data_abort_is_permission_fault() {
-            // println!(
-            //     "write {}, width {}, reg width {}, addr {:x}, iss {:x}, reg idx {}, reg val {:#x}, esr {:#x}",
-            //     exception_data_abort_access_is_write(),
-            //     emu_ctx.width,
-            //     emu_ctx.reg_width,
-            //     emu_ctx.address,
-            //     exception_iss(),
-            //     emu_ctx.reg,
-            //     current_cpu().get_gpr(emu_ctx.reg),
-            //     exception_esr()
-            // );
-            // no need to rewrite elr
-
-            // let time1 = time_current_us();
-            // println!("migrate_data_abort_handler: {}us", time1 - time0);
+            // The access is not permitted by the stage-2 mapping. This
+            // branch used to return silently, so the guest re-executed the
+            // faulting instruction forever: the code was left behind by the
+            // removal of live migration (which fixed the permission and
+            // retried), and is latent today because every stage-2 mapping
+            // the tree creates is read-write. Re-present the refusal as a
+            // permission abort with the trapped DFSC so the guest handles
+            // it like every other guest fault, instead of burning the core.
+            // The log reports the raw syndrome, PC and (when valid) the
+            // guest VA: resolving an IPA here would walk page tables just
+            // for the message.
+            error!(
+                "Core {} data abort is permission fault, esr {:#x}, @pc {:#x}",
+                current_cpu().id,
+                exception_esr(),
+                elr,
+            );
+            if let Some(far) = exception_valid_far() {
+                error!("Core {} permission fault far {:#x}", current_cpu().id, far);
+            }
+            // The fault status is the trapped stage-2 permission DFSC, level
+            // bits included, and it is kept verbatim also when the refusal
+            // hit the guest's stage-1 walk (S1PTW set): a permission fault
+            // keeps its DFSC rather than being reported as a walk abort.
+            // For a guest with its own stage-1 enabled this re-presents the
+            // stage-2 refusal at EL1 (the level is the stage-2 walk's, not
+            // the guest stage-1's); for a guest with its MMU off the
+            // guest-visible fault is exact.
+            exception_inject_data_abort((exception_iss() & 0b111111) as u64);
             return;
         } else {
             // An access-flag or address-size fault, or a real external
