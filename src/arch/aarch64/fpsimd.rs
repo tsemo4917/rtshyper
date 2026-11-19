@@ -5,25 +5,20 @@
 //! the rest of the vCPU system registers; once TFP is clear it traps to EL1
 //! on its own.
 //!
-//! `CPTR_EL2.TZ` (bit 8) stays set. SVE is not part of the saved state, so an
-//! SVE instruction is reported to EL1 as undefined instead of being retried
-//! after a Q-register restore.
+//! `CPTR_EL2.TZ` (bit 8) stays set. SVE is not part of the saved state, so
+//! the EC 0x19 trap injects an undefined-instruction exception to EL1
+//! through the common entry (`exception::exception_inject_unknown`).
 
-use aarch64_cpu::registers::{CPTR_EL2, ELR_EL1, ESR_EL1, ESR_EL2, SCTLR_EL1, SPSR_EL1, VBAR_EL1};
-use fp_switch::{pan_on_entry, trap_action, trap_fp_on_enter, undef_target, unknown_esr, TrapAction};
+use aarch64_cpu::registers::CPTR_EL2;
+use fp_switch::{trap_action, trap_fp_on_enter, TrapAction};
 use tock_registers::interfaces::{Readable, Writeable};
 
-use crate::arch::ContextFrame;
-use crate::arch::ContextFrameTrait;
 use crate::kernel::{current_cpu, Vcpu};
 
 /// Trap Advanced SIMD and floating-point to EL2 when HCR_EL2.E2H is 0.
 const CPTR_EL2_TFP: u64 = 1 << 10;
 /// Trap SVE instructions to EL2. Takes priority over TFP and reports EC 0x19.
 const CPTR_EL2_TZ: u64 = 1 << 8;
-const PSTATE_PAN: u64 = 1 << 22;
-const SCTLR_SPAN: u64 = 1 << 23;
-const PSTATE_DAIF: u64 = (1 << 9) | (1 << 8) | (1 << 7) | (1 << 6);
 
 fn set_fp_trap(trap_fp: bool) {
     let mut cptr = CPTR_EL2.get();
@@ -92,25 +87,4 @@ pub(super) fn handle_trap() {
             current_cpu().set_fp_owner(Some(current));
         }
     }
-}
-
-/// EC 0x19. SVE register state is not switched, so the instruction must not
-/// be retried. EL1 receives an undefined-instruction exception instead.
-pub(super) fn handle_sve_trap(ctx: &mut ContextFrame) {
-    let source_spsr = ctx.spsr();
-    let source_elr = ctx.exception_pc() as u64;
-    let target = undef_target(source_spsr & 0xf);
-    let span_clear = SCTLR_EL1.get() & SCTLR_SPAN == 0;
-    let pan = pan_on_entry(span_clear, source_spsr & PSTATE_PAN != 0);
-    let mut new_spsr = target.target_mode | PSTATE_DAIF;
-    if pan {
-        new_spsr |= PSTATE_PAN;
-    }
-    let il = ESR_EL2.read(ESR_EL2::IL) != 0;
-
-    ELR_EL1.set(source_elr);
-    SPSR_EL1.set(source_spsr);
-    ESR_EL1.set(unknown_esr(il));
-    ctx.set_spsr(new_spsr);
-    ctx.set_exception_pc(VBAR_EL1.get() as usize + target.vector_offset as usize);
 }
