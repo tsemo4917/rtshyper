@@ -4,10 +4,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::arch::{LVL1_SHIFT, PAGE_SIZE, PTE_S1_NORMAL};
+use crate::arch::{LVL1_SHIFT, PAGE_SIZE, PTE_S1_NORMAL, VM_IPA_SIZE};
 use crate::board::PLAT_DESC;
 use crate::kernel::{current_cpu, ipi_send_msg, IpiInnerMsg, IpiType, IpiVmmPercoreMsg, Vm};
-use crate::util::barrier;
+use crate::util::{barrier, round_down};
 
 use super::VmmPercoreEvent;
 
@@ -86,10 +86,33 @@ pub fn vmm_map_ipa_percore(vm: &Vm, is_master: bool) {
                     .pt_map_range(hva, PAGE_SIZE, pa, PTE_S1_NORMAL, false);
             }
 
-            for ipa in region.as_range().step_by(1 << LVL1_SHIFT) {
-                let hva = vm.ipa2hva(ipa);
-                let pte = current_cpu().pt().get_pte(hva, 1).unwrap();
-                shared_pte_list.push((hva, pte));
+            // share one L1 entry per 1GB block of the pages mapped above:
+            // sample the base of each block (stepping from ipa_start can
+            // leave the last crossed block without a sample point) up to the
+            // last page the per-page loop maps, since allocation rounds the
+            // length but not the start to whole pages. Complete blocks only
+            // inside the VM's own IPA window: beyond it ipa2hva() returns 0
+            // and a shared entry would overwrite VA 0 of every other core's
+            // root, so there keep only the samples the original stepping
+            // produced.
+            let block_size = 1 << LVL1_SHIFT;
+            if let Some(last) = region.as_range().step_by(PAGE_SIZE).next_back() {
+                let last_in_window = last.min((1 << VM_IPA_SIZE) - 1);
+                let mut share = |ipa: usize| {
+                    let hva = vm.ipa2hva(ipa);
+                    let pte = current_cpu().pt().get_pte(hva, 1).unwrap();
+                    shared_pte_list.push((hva, pte));
+                };
+                for ipa in (round_down(region.ipa_start, block_size)..=last_in_window).step_by(block_size) {
+                    share(ipa);
+                }
+                for ipa in region
+                    .as_range()
+                    .step_by(block_size)
+                    .skip_while(|ipa| *ipa < (1 << VM_IPA_SIZE))
+                {
+                    share(ipa);
+                }
             }
         }
         FINISH.store(true, Ordering::Relaxed);
