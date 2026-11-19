@@ -7,6 +7,7 @@
  *  We still need some notify mechanism to improve the CPU usage.
  */
 use alloc::collections::BTreeMap;
+use core::ops::Deref;
 
 use spin::Mutex;
 
@@ -16,7 +17,16 @@ use crate::kernel::{hvc_send_msg_to_vm, HvcGuestMsg, HvcUniLibMsg};
 use crate::kernel::{HVC_UNILIB_FS_CLOSE, HVC_UNILIB_FS_OPEN, HVC_UNILIB_FS_READ, HVC_UNILIB_FS_WRITE};
 use crate::util::{memcpy_safe, sleep};
 
-pub static UNILIB_FS_LIST: Mutex<BTreeMap<usize, UnilibFS>> = Mutex::new(BTreeMap::new());
+struct UnilibFSList {
+    fs: BTreeMap<usize, UnilibFS>,
+    /// The VM whose fs operation is waiting for the MVM; fs operations are sent one at a time.
+    in_flight: Option<usize>,
+}
+
+static UNILIB_FS_LIST: Mutex<UnilibFSList> = Mutex::new(UnilibFSList {
+    fs: BTreeMap::new(),
+    in_flight: None,
+});
 
 #[repr(C)]
 pub struct UnilibFSCfg {
@@ -121,10 +131,56 @@ impl UnilibFS {
     }
 }
 
+/// The right to send one fs operation of a VM to the MVM and wait for its result.
+/// `UNILIB_FS_LIST` is only locked to take and to return it, not across the MVM round-trip:
+/// the MVM takes the same lock in `unilib_fs_append` and `unilib_fs_remove`,
+/// and cannot answer while it spins on a lock held by the waiting request.
+struct UnilibFSRequest {
+    fs: UnilibFS,
+}
+
+impl UnilibFSRequest {
+    /// Wait until no fs operation is in flight, then take the registered `UnilibFS` of `vm_id`.
+    fn start(vm_id: usize) -> Option<Self> {
+        loop {
+            let mut lock = UNILIB_FS_LIST.lock();
+            if lock.in_flight.is_none() {
+                let fs = lock.fs.get(&vm_id)?.clone();
+                lock.in_flight = Some(vm_id);
+                return Some(Self { fs });
+            }
+            drop(lock);
+            sleep(1);
+        }
+    }
+}
+
+impl Deref for UnilibFSRequest {
+    type Target = UnilibFS;
+    fn deref(&self) -> &UnilibFS {
+        &self.fs
+    }
+}
+
+impl Drop for UnilibFSRequest {
+    fn drop(&mut self) {
+        UNILIB_FS_LIST.lock().in_flight = None;
+    }
+}
+
 pub fn unilib_fs_remove(vm_id: usize) {
     // println!("unilib_fs_remove: VM[{}] umount unilib-fs", vm_id);
-    let mut lock = UNILIB_FS_LIST.lock();
-    lock.remove(&vm_id);
+    // Wait until no fs operation is in flight, as the lock used to make the removal wait:
+    // the operation may still use the memory of the VM being removed.
+    loop {
+        let mut lock = UNILIB_FS_LIST.lock();
+        if lock.in_flight.is_none() {
+            lock.fs.remove(&vm_id);
+            return;
+        }
+        drop(lock);
+        sleep(1);
+    }
 }
 
 /// Init the UnilibFS of guest VM, triggered by GVM through a HVC call, HVC_UNILIB | HVC_UNILIB_FS_INIT.
@@ -151,7 +207,7 @@ pub fn unilib_fs_init() -> Result<usize, ()> {
     // Enter a loop, wait for VM0 to setup the unilib fs config struct.
     loop {
         let lock = UNILIB_FS_LIST.lock();
-        if lock.get(&vm_id).is_some() {
+        if lock.fs.contains_key(&vm_id) {
             println!("unilib_fs_init, fs append success, return");
             drop(lock);
             return Ok(0);
@@ -182,8 +238,22 @@ pub fn unilib_fs_append(mmio_ipa: usize) -> Result<usize, ()> {
         buf_pa
     );
     unilib_fs.set_buf_pa(buf_pa);
-    UNILIB_FS_LIST.lock().insert(unilib_fs.vm_id(), unilib_fs);
-    Ok(0)
+    // The MVM answers by VM id only, so replace the registration of a VM only after its fs operation
+    // in flight is done, as the lock used to make it wait; registering any other VM does not wait.
+    // The wait compares the VM id sampled once here, so waiting never reads the caller's (guest)
+    // memory, let alone under the lock. Once the wait is over, the registration is inserted under
+    // the VM id read while the lock is held, at the same place as before, so the id a registration
+    // lands on does not change.
+    let vm_id = unilib_fs.vm_id();
+    loop {
+        let mut lock = UNILIB_FS_LIST.lock();
+        if lock.in_flight != Some(vm_id) {
+            lock.fs.insert(unilib_fs.vm_id(), unilib_fs);
+            return Ok(0);
+        }
+        drop(lock);
+        sleep(1);
+    }
 }
 
 /// Finished one unilib fs operation.
@@ -216,8 +286,7 @@ pub fn unilib_fs_open(path_start_ipa: usize, path_length: usize, flags: usize) -
     //     vm_id, path_start_ipa, path_length, flags
     // );
     // Get fs_cfg struct according to vm_id.
-    let fs_list_lock = UNILIB_FS_LIST.lock();
-    let fs_cfg = match fs_list_lock.get(&vm_id) {
+    let fs_cfg = match UnilibFSRequest::start(vm_id) {
         Some(cfg) => cfg,
         None => {
             println!("VM[{}] doesn't register a unilib fs, return", vm_id);
@@ -266,8 +335,7 @@ pub fn unilib_fs_close(fd: usize) -> Result<usize, ()> {
     // println!("VM[{}] unilib fs close fd {}", vm_id, fd);
 
     // Get fs_cfg struct according to vm_id.
-    let fs_list_lock = UNILIB_FS_LIST.lock();
-    let fs_cfg = match fs_list_lock.get(&vm_id) {
+    let fs_cfg = match UnilibFSRequest::start(vm_id) {
         Some(cfg) => cfg,
         None => {
             println!("VM[{}] doesn't register a unilib fs, return", vm_id);
@@ -312,8 +380,7 @@ pub fn unilib_fs_read(fd: usize, buf_ipa: usize, len: usize) -> Result<usize, ()
     //     vm_id, fd, buf_ipa, len
     // );
     // Get fs_cfg struct according to vm_id.
-    let fs_list_lock = UNILIB_FS_LIST.lock();
-    let fs_cfg = match fs_list_lock.get(&vm_id) {
+    let fs_cfg = match UnilibFSRequest::start(vm_id) {
         Some(cfg) => cfg,
         None => {
             println!("VM[{}] doesn't register a unilib fs, return", vm_id);
@@ -365,8 +432,7 @@ pub fn unilib_fs_write(fd: usize, buf_ipa: usize, len: usize) -> Result<usize, (
     // );
 
     // Get fs_cfg struct according to vm_id.
-    let fs_list_lock = UNILIB_FS_LIST.lock();
-    let fs_cfg = match fs_list_lock.get(&vm_id) {
+    let fs_cfg = match UnilibFSRequest::start(vm_id) {
         Some(cfg) => cfg,
         None => {
             println!("VM[{}] doesn't register a unilib fs, return", vm_id);
@@ -419,8 +485,7 @@ pub fn unilib_fs_lseek(fd: usize, offset: usize, whence: usize) -> Result<usize,
     //     vm_id, fd, offset, whence
     // );
     // Get fs_cfg struct according to vm_id.
-    let fs_list_lock = UNILIB_FS_LIST.lock();
-    let fs_cfg = match fs_list_lock.get(&vm_id) {
+    let fs_cfg = match UnilibFSRequest::start(vm_id) {
         Some(cfg) => cfg,
         None => {
             println!("VM[{}] doesn't register a unilib fs, return", vm_id);
