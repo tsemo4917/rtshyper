@@ -1,19 +1,86 @@
 use crate::arch::smc_guest_handler;
 use crate::device::{emu_handler, emu_reg_handler, EmuContext};
-use crate::kernel::{active_vm, current_cpu, hvc_guest_handler};
+use crate::kernel::{current_cpu, hvc_guest_handler};
 
 use super::exception::{
     exception_data_abort_access_is_sign_ext, exception_data_abort_access_is_write, exception_data_abort_access_reg,
-    exception_data_abort_access_reg_width, exception_data_abort_access_width, exception_data_abort_handleable,
+    exception_data_abort_access_reg_width, exception_data_abort_access_width, exception_data_abort_emulatable,
     exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault, exception_esr,
-    exception_fault_addr, exception_iss, exception_next_instruction_step,
+    exception_fault_addr, exception_inject_data_abort, exception_inject_unknown, exception_iss,
+    exception_next_instruction_step, exception_valid_far, FSC_EXTABT,
 };
 
 const HVC_RETURN_REG: usize = 0;
 const SMC_RETURN_REG: usize = 0;
 
 pub fn data_abort_handler() {
-    // let time0 = time_current_us();
+    let elr = current_cpu().exception_pc();
+
+    if !exception_data_abort_is_translate_fault() {
+        if exception_data_abort_is_permission_fault() {
+            // The access is not permitted by the stage-2 mapping. This
+            // branch used to return silently, so the guest re-executed the
+            // faulting instruction forever: the code was left behind by the
+            // removal of live migration (which fixed the permission and
+            // retried), and is latent today because every stage-2 mapping
+            // the tree creates is read-write. Re-present the refusal as a
+            // permission abort with the trapped DFSC so the guest handles
+            // it like every other guest fault, instead of burning the core.
+            // The log reports the raw syndrome, PC and (when valid) the
+            // guest VA: resolving an IPA here would walk page tables just
+            // for the message.
+            error!(
+                "Core {} data abort is permission fault, esr {:#x}, @pc {:#x}",
+                current_cpu().id,
+                exception_esr(),
+                elr,
+            );
+            if let Some(far) = exception_valid_far() {
+                error!("Core {} permission fault far {:#x}", current_cpu().id, far);
+            }
+            // The fault status is the trapped stage-2 permission DFSC, level
+            // bits included, and it is kept verbatim also when the refusal
+            // hit the guest's stage-1 walk (S1PTW set): a permission fault
+            // keeps its DFSC rather than being reported as a walk abort.
+            // For a guest with its own stage-1 enabled this re-presents the
+            // stage-2 refusal at EL1 (the level is the stage-2 walk's, not
+            // the guest stage-1's); for a guest with its MMU off the
+            // guest-visible fault is exact.
+            exception_inject_data_abort((exception_iss() & 0b111111) as u64);
+            return;
+        } else {
+            // An access-flag or address-size fault, or a real external
+            // abort: the guest's own doing, deflect it back. The log
+            // reports the raw syndrome and PC, plus FAR_EL2 only when the
+            // hardware reported a valid address.
+            error!(
+                "Core {} data abort is not translate fault, esr {:#x}, @pc {:#x}",
+                current_cpu().id,
+                exception_esr(),
+                elr,
+            );
+            if let Some(far) = exception_valid_far() {
+                error!("Core {} data abort far {:#x}", current_cpu().id, far);
+            }
+            exception_inject_data_abort(FSC_EXTABT);
+            return;
+        }
+    }
+
+    // A translation fault is the emulated-device path, but only a direct
+    // guest access can be emulated: the syndrome must decode the access,
+    // FAR_EL2 must hold the faulting VA, and a fault on the guest's own
+    // stage-1 table walk is not an MMIO access at all.
+    if !exception_data_abort_emulatable() {
+        error!(
+            "Core {} data abort not emulatable, esr {:#x}",
+            current_cpu().id,
+            exception_esr()
+        );
+        exception_inject_data_abort(FSC_EXTABT);
+        return;
+    }
+
     let emu_ctx = EmuContext {
         address: exception_fault_addr(),
         width: exception_data_abort_access_width(),
@@ -22,45 +89,7 @@ pub fn data_abort_handler() {
         reg: exception_data_abort_access_reg(),
         reg_width: exception_data_abort_access_reg_width(),
     };
-    let elr = current_cpu().exception_pc();
-
-    if !exception_data_abort_handleable() {
-        panic!(
-            "Core {} data abort not handleable {:#x}, esr {:#x}",
-            current_cpu().id,
-            exception_fault_addr(),
-            exception_esr()
-        );
-    }
-
-    if !exception_data_abort_is_translate_fault() {
-        if exception_data_abort_is_permission_fault() {
-            // println!(
-            //     "write {}, width {}, reg width {}, addr {:x}, iss {:x}, reg idx {}, reg val {:#x}, esr {:#x}",
-            //     exception_data_abort_access_is_write(),
-            //     emu_ctx.width,
-            //     emu_ctx.reg_width,
-            //     emu_ctx.address,
-            //     exception_iss(),
-            //     emu_ctx.reg,
-            //     current_cpu().get_gpr(emu_ctx.reg),
-            //     exception_esr()
-            // );
-            // no need to rewrite elr
-
-            // let time1 = time_current_us();
-            // println!("migrate_data_abort_handler: {}us", time1 - time0);
-            return;
-        } else {
-            panic!(
-                "Core {} data abort is not translate fault {:#x}",
-                current_cpu().id,
-                exception_fault_addr(),
-            );
-        }
-    }
     if !emu_handler(&emu_ctx) {
-        active_vm().unwrap().show_pagetable(emu_ctx.address);
         error!(
             "write {}, width {}, reg width {}, addr {:x}, iss {:x}, reg idx {}, reg val {:#x}, esr {:#x}",
             exception_data_abort_access_is_write(),
@@ -72,10 +101,14 @@ pub fn data_abort_handler() {
             current_cpu().get_gpr(emu_ctx.reg),
             exception_esr()
         );
-        panic!(
-            "data_abort_handler: Failed to handler emul device request, ipa {:#x} elr {:#x}",
-            emu_ctx.address, elr
-        );
+        // No emulated device served the access: either the IPA is not one
+        // of this VM's configured memory, passthrough or emulated-device
+        // regions, or a registered device declined it. Either way the
+        // hypervisor has nothing to answer for, so deflect the abort back
+        // into the guest: the guest handles (or dies from) its own fault,
+        // instead of the hypervisor taking the whole machine down with it.
+        exception_inject_data_abort(FSC_EXTABT);
+        return;
     }
     let val = elr + exception_next_instruction_step();
     current_cpu().set_exception_pc(val);
@@ -208,10 +241,10 @@ pub fn sysreg_handler(iss: u32) {
 
     let elr = current_cpu().exception_pc();
     if !emu_reg_handler(&emu_ctx) {
-        panic!(
-            "sysreg_handler: Failed to handler emu reg request, ({:#x} at {:#x})",
-            emu_ctx.address, elr
-        );
+        // The register is not emulated for this guest: report the access to
+        // EL1 as an undefined instruction instead of killing the machine.
+        exception_inject_unknown();
+        return;
     }
 
     let val = elr + exception_next_instruction_step();
