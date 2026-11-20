@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::arch::{interrupt_arch_deactive_irq, INTERRUPT_IRQ_GUEST_TIMER};
+use crate::arch::{interrupt_arch_deactive_irq, Arch, TlbInvalidate, INTERRUPT_IRQ_GUEST_TIMER};
 use crate::kernel::vm_if_reset;
 use crate::kernel::{
     current_cpu, interrupt_cpu_enable, interrupt_vm_remove, ipi_send_msg, remove_vm, remove_vm_async_task, vm_by_id,
@@ -32,7 +32,12 @@ pub fn vmm_remove_vm(vm_id: usize) {
         // remove vm unilib
         crate::util::unilib::unilib_fs_remove(vm_id);
         // unmap ipa(hva) percore at last
-        vmm_unmap_ipa2hva(vm);
+        vmm_unmap_ipa2hva(vm.clone());
+        // Invalidate the stage-2 TLB entries of the VM before its pages go
+        // back to the color pool: generate_vm_id() recycles the VMID, and a
+        // stale entry would let the next VM with this VMID translate to
+        // memory that has been handed to someone else.
+        Arch::invalid_guest_all_by_vmid(vm.pt_dir(), vm.id());
         remove_vm(vm_id);
         info!("remove vm[{}] successfully", vm_id);
     } else {
