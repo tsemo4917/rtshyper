@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use crate::arch::TlbInvalidate;
+use crate::arch::{ArchTrait, TlbInvalidate};
 
 use super::Aarch64Arch;
 
@@ -43,5 +43,17 @@ impl TlbInvalidate for Aarch64Arch {
         unsafe {
             asm!("dsb ish", "tlbi vmalls12e1is", "dsb ish", "isb", options(nostack));
         }
+    }
+
+    // A by-VMID invalidation applies to the VMID held in VTTBR_EL2 of the
+    // executing core, so temporarily install the target VM's stage-2 context
+    // and restore the previous one after the inner-shareable broadcast.
+    fn invalid_guest_all_by_vmid(base: usize, vmid: usize) {
+        let vttbr: u64;
+        mrs!(vttbr, VTTBR_EL2);
+        Self::install_vm_page_table(base, vmid);
+        Self::invalid_guest_all();
+        msr!(VTTBR_EL2, vttbr);
+        isb!();
     }
 }
