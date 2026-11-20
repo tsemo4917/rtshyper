@@ -10,7 +10,7 @@ use alloc::task::Wake;
 use spin::mutex::Mutex;
 
 use crate::device::{mediated_blk_read, mediated_blk_write, virtio_blk_notify_handler, ReadAsyncMsg, WriteAsyncMsg};
-use crate::kernel::{active_vm, ipi_send_msg, IpiInnerMsg, IpiMediatedMsg, IpiType};
+use crate::kernel::{active_vm, ipi_process_pending, ipi_send_msg, IpiInnerMsg, IpiMediatedMsg, IpiType};
 use crate::util::{memcpy_safe, sleep};
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +95,12 @@ impl Executor {
 
     pub fn add_task(&self, task: AsyncTask, ipi: bool) {
         while active_vm().unwrap().id() != 0 && self.io_task_list.lock().len() >= 64 {
+            // This backpressure wait holds no lock between rounds and runs
+            // with interrupts masked; run pending MapIPA broadcasts (with
+            // their all-core barrier) so a VM create on another core does
+            // not stall every core until the backlog drains. Other
+            // messages stay queued for the normal interrupt path.
+            ipi_process_pending();
             sleep(1);
         }
         let mut ipi_list = self.ipi_task_list.lock();

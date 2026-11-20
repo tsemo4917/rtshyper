@@ -11,7 +11,7 @@ use alloc::collections::BTreeMap;
 use spin::Mutex;
 
 use crate::kernel::HVC_UNILIB;
-use crate::kernel::{active_vm, HVC_UNILIB_FS_INIT, HVC_UNILIB_FS_LSEEK};
+use crate::kernel::{active_vm, ipi_process_pending, HVC_UNILIB_FS_INIT, HVC_UNILIB_FS_LSEEK};
 use crate::kernel::{hvc_send_msg_to_vm, HvcGuestMsg, HvcUniLibMsg};
 use crate::kernel::{HVC_UNILIB_FS_CLOSE, HVC_UNILIB_FS_OPEN, HVC_UNILIB_FS_READ, HVC_UNILIB_FS_WRITE};
 use crate::util::{memcpy_safe, sleep};
@@ -157,6 +157,11 @@ pub fn unilib_fs_init() -> Result<usize, ()> {
             return Ok(0);
         }
         drop(lock);
+        // This wait holds no lock between rounds and runs with interrupts
+        // masked; run pending MapIPA broadcasts (with their all-core
+        // barrier) so a VM create on another core does not stall every
+        // core until the registration arrives. Other messages stay queued.
+        ipi_process_pending();
         sleep(5);
     }
 }
